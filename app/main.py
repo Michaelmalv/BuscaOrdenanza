@@ -77,16 +77,8 @@ def sync_manual_uploads() -> None:
         json_file = JSON_DIR / f'{target_path.stem}.json'
         
         if not markdown_file.exists() or not json_file.exists():
-            print(f"Auto-processing manual file: {target_path.name}")
-            try:
-                process_uploaded_file(
-                    input_path=str(target_path),
-                    markdown_dir=str(MARKDOWN_DIR),
-                    json_dir=str(JSON_DIR),
-                    index_to_meili=True
-                )
-            except Exception as e:
-                print(f"Error auto-processing {target_path.name}: {e}")
+            print(f"[!] Archivo manual pendiente de procesar: {target_path.name}. Por favor ejecuta en tu terminal: 'python scripts/procesar_biblioteca.py'")
+
 
 
 def list_markdown_documents() -> list[dict]:
