@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Busca Ordenanza</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 24px; background: linear-gradient(135deg, #1e293b, #0f172a); border-bottom: 1px solid #334155; }
+    main { display: grid; grid-template-columns: 320px 1fr; min-height: calc(100vh - 80px); }
+    aside, section { padding: 20px; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    input, button, textarea { width: 100%; box-sizing: border-box; padding: 12px; border-radius: 10px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; }
+    button { cursor: pointer; background: #2563eb; border: none; margin-top: 8px; }
+    button:hover { background: #1d4ed8; }
+    .muted { color: #94a3b8; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Busca Ordenanza</h1>
+    <p class="muted">Interfaz base para ver Markdown y buscar documentos indexados.</p>
+  </header>
+  <main>
+    <aside>
+      <div class="card">
+        <h2>Busqueda</h2>
+        <input type="text" placeholder="Buscar por palabras...">
+        <button>Buscar</button>
+      </div>
+      <div class="card">
+        <h2>Documentos</h2>
+        <p class="muted">Aqui luego listaremos los PDFs y sus fragmentos.</p>
+      </div>
+    </aside>
+    <section>
+      <div class="card">
+        <h2>Visor Markdown</h2>
+        <textarea rows="18" placeholder="Aqui se renderizara el Markdown del documento seleccionado."></textarea>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
