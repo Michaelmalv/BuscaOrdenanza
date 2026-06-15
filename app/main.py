@@ -221,20 +221,76 @@ def score_fragment(fragment: dict, fragment_query: str | None = None) -> int:
     return score_fragment_parsed(haystack, parsed_query)
 
 
-def build_fragments(document_id: str, fragment_query: str | None = None) -> list[dict]:
+_fragments_cache: dict[str, list[dict]] = {}
+
+def get_cached_fragments(document_id: str) -> list[dict]:
+    if document_id in _fragments_cache:
+        return _fragments_cache[document_id]
+
+    # Try loading from the pre-computed JSON file
+    json_path = JSON_DIR / f'{document_id}.json'
+    if json_path.exists():
+        try:
+            import json
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            fragments = []
+            for chunk in data:
+                c_markdown = chunk.get('content_markdown', '').strip()
+                if not c_markdown:
+                    continue
+                fragments.append({
+                    'id': f"{document_id}-fragment-{chunk['chunk_number']}",
+                    'document_id': document_id,
+                    'chunk_number': chunk['chunk_number'],
+                    'section': chunk.get('section', ''),
+                    'content_markdown': c_markdown,
+                    'content_text': chunk.get('content_text', ''),
+                    'char_count': len(c_markdown),
+                })
+            _fragments_cache[document_id] = fragments
+            return fragments
+        except Exception as e:
+            print(f"Error loading JSON cache for {document_id}: {e}")
+
+    # Fallback: parse Markdown
+    fragments = build_fragments_from_markdown(document_id)
+    _fragments_cache[document_id] = fragments
+    return fragments
+
+
+def build_fragments_from_markdown(document_id: str) -> list[dict]:
     markdown = read_markdown_document(document_id)
     fragments: list[dict] = []
-    normalized_query = fragment_query.strip().lower() if fragment_query else ''
-    
-    parsed_query = parse_search_query(normalized_query) if normalized_query else []
-
     for index, chunk in enumerate(split_markdown_by_headers(markdown), start=1):
         content_markdown = chunk['content_markdown'].strip()
         if not content_markdown:
             continue
-
         content_text = markdown_to_plain_text(content_markdown)
-        haystack = f"{chunk['section']} {content_text}".lower()
+        fragments.append({
+            'id': f'{document_id}-fragment-{index}',
+            'document_id': document_id,
+            'chunk_number': index,
+            'section': chunk['section'],
+            'content_markdown': content_markdown,
+            'content_text': content_text,
+            'char_count': len(content_markdown),
+        })
+    return fragments
+
+
+def build_fragments(document_id: str, fragment_query: str | None = None) -> list[dict]:
+    try:
+        all_fragments = get_cached_fragments(document_id)
+    except FileNotFoundError:
+        raise FileNotFoundError(document_id)
+
+    normalized_query = fragment_query.strip().lower() if fragment_query else ''
+    parsed_query = parse_search_query(normalized_query) if normalized_query else []
+
+    filtered_fragments = []
+    for frag in all_fragments:
+        haystack = f"{frag['section']} {frag['content_text']}".lower()
 
         # Local filtering: Check if all REQUIRED terms are present
         if parsed_query:
@@ -247,23 +303,15 @@ def build_fragments(document_id: str, fragment_query: str | None = None) -> list
             if not matched_all:
                 continue
 
-        fragments.append(
-            {
-                'id': f'{document_id}-fragment-{index}',
-                'document_id': document_id,
-                'chunk_number': index,
-                'section': chunk['section'],
-                'content_markdown': content_markdown,
-                'content_text': content_text,
-                'char_count': len(content_markdown),
-                'score': score_fragment_parsed(haystack, parsed_query),
-            }
-        )
+        # Copy fragment to score it without modifying the cached version
+        frag_copy = dict(frag)
+        frag_copy['score'] = score_fragment_parsed(haystack, parsed_query)
+        filtered_fragments.append(frag_copy)
 
     if normalized_query:
-        fragments.sort(key=lambda item: (-item['score'], item['chunk_number']))
+        filtered_fragments.sort(key=lambda item: (-item['score'], item['chunk_number']))
 
-    return fragments
+    return filtered_fragments
 
 
 def paginate_fragments(fragments: list[dict], page: int, page_size: int) -> dict:
@@ -282,20 +330,44 @@ def paginate_fragments(fragments: list[dict], page: int, page_size: int) -> dict
     }
 
 
+import threading
+import time
+
+_meili_online = False
+
+def check_meili_loop():
+    global _meili_online
+    while True:
+        try:
+            service = MeiliService.from_settings()
+            # Use short timeout of 0.5s for checking health
+            health_status = service.client.health()
+            _meili_online = (health_status.get('status') in ('available', 'ok'))
+        except Exception:
+            _meili_online = False
+        time.sleep(10)
+
+def warm_cache():
+    try:
+        documents = list_markdown_documents()
+        for doc in documents:
+            doc_id = doc['id']
+            get_cached_fragments(doc_id)
+        print(f"[*] Cache precalentado: {len(documents)} documentos cargados en memoria.")
+    except Exception as e:
+        print(f"Error calentando cache: {e}")
+
+@app.on_event("startup")
+def startup_event():
+    threading.Thread(target=warm_cache, daemon=True).start()
+    threading.Thread(target=check_meili_loop, daemon=True).start()
+
+
 @app.get('/health')
 def health() -> dict[str, str]:
-    meili_connected = False
-    try:
-        service = MeiliService.from_settings()
-        health_status = service.client.health()
-        # In python-meilisearch, health() returns a dict like {'status': 'available'}
-        if health_status.get('status') in ('available', 'ok'):
-            meili_connected = True
-    except Exception:
-        pass
     return {
         'status': 'ok',
-        'meilisearch': 'connected' if meili_connected else 'disconnected'
+        'meilisearch': 'connected' if _meili_online else 'disconnected'
     }
 
 
@@ -329,7 +401,7 @@ def home(request: Request) -> HTMLResponse:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Busca Ordenanza â NotebookLM Premium</title>
+  <title>Busca Ordenanza — NotebookLM Premium</title>
   
   <script>
     window.onerror = function (message, source, lineno, colno, error) {
@@ -1177,22 +1249,22 @@ def home(request: Request) -> HTMLResponse:
   </noscript>
 
   <!-- Floating Diagnostic Panel -->
-  <div id="jsDiagnostics" style="position: fixed; bottom: 24px; right: 24px; background: rgba(17, 24, 39, 0.95); color: #10b981; border: 1px solid #10b981; padding: 16px; border-radius: 16px; font-family: 'JetBrains Mono', monospace; font-size: 11px; z-index: 99999; text-align: left; max-width: 320px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); backdrop-filter: blur(8px); display: flex; flex-direction: column; gap: 6px;">
-    <strong style="color: #fff; font-family: 'Outfit', sans-serif; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
+  <div id="jsDiagnostics" style="position: fixed; bottom: 24px; right: 24px; background: rgba(17, 24, 39, 0.95); color: #10b981; border: 1px solid #10b981; padding: 16px; border-radius: 16px; font-family: 'JetBrains Mono', monospace; font-size: 11px; z-index: 99999; text-align: left; max-width: 320px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); display: none; flex-direction: column; gap: 6px;">
+    <strong style="color: #fff; font-family: 'Outfit', sans-serif; font-size: 13px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 4px; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
       <span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);"></span>
       Diagnóstico de Frontend
     </strong>
-    <div>â¢ Script cargado: <span id="diagScript" style="color: #ef4444; font-weight: bold;">NO</span></div>
-    <div>â¢ DOM listo: <span id="diagDOM" style="color: #ef4444; font-weight: bold;">NO</span></div>
-    <div>â¢ init() completado: <span id="diagInit" style="color: #ef4444; font-weight: bold;">NO</span></div>
-    <div>â¢ loadDocuments(): <span id="diagLoadDocs" style="color: #ef4444; font-weight: bold;">NO</span></div>
+    <div>• Script cargado: <span id="diagScript" style="color: #ef4444; font-weight: bold;">NO</span></div>
+    <div>• DOM listo: <span id="diagDOM" style="color: #ef4444; font-weight: bold;">NO</span></div>
+    <div>• init() completado: <span id="diagInit" style="color: #ef4444; font-weight: bold;">NO</span></div>
+    <div>• loadDocuments(): <span id="diagLoadDocs" style="color: #ef4444; font-weight: bold;">NO</span></div>
     <div id="diagErrorBox" style="display: none; margin-top: 8px; padding: 8px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 8px; color: #f87171; max-height: 120px; overflow-y: auto; white-space: pre-wrap; font-size: 10px;"></div>
   </div>
 
   <header>
     <div class="logo-container">
       <h1>Busca Ordenanza</h1>
-      <p>NotebookLM Inteligente para Leyes y Resoluciones</p>
+      <p>Búsqueda Inteligente para Leyes y Resoluciones.</p>
     </div>
     
     <div id="meiliStatus" class="status-badge">
@@ -1204,6 +1276,7 @@ def home(request: Request) -> HTMLResponse:
   <main>
     <!-- Left Sidebar: Uploader & Document List -->
     <div class="col col-sidebar">
+
 
 
       <!-- Document list -->
@@ -1303,34 +1376,8 @@ def home(request: Request) -> HTMLResponse:
             <svg width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="color: var(--text-muted); opacity: 0.5; margin-bottom: 16px;">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
             </svg>
-            <h3 style="font-family: var(--font-outfit); font-weight: 600; color: #fff;">Biblioteca Vacíoa</h3>
-            <p class="description-text" style="max-width: 250px; margin-top: 6px;">Selecciona o carga una ordenanza en el panel izquierdo para desplegar su contenido aquí.</p>
-          </div>
-        </div>
-
-        <!-- Fragments Area -->
-        <div class="fragment-section">
-          <h3 class="list-title" style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-            <span>Fragmentos del Documento</span>
-            <span class="pill-badge" style="font-size: 9px; padding: 2px 6px;" id="fragCountBadge">0</span>
-          </h3>
-          
-          <div class="fragment-toolbar">
-            <input id="fragmentQuery" type="text" placeholder="Filtrar fragmentos locales..." style="padding: 8px 12px;">
-            <button id="fragmentSearch" class="btn-secondary" style="padding: 8px 14px;">Filtrar</button>
-            <button id="fragmentClear" class="btn-secondary" style="padding: 8px 14px;">Limpiar</button>
-          </div>
-
-          <div class="fragment-list" id="fragmentList">
-            <p class="description-text" style="font-style: italic; text-align: center; margin-top: 10px;">Ningún documento activo.</p>
-          </div>
-
-          <div class="fragment-pagination">
-            <div id="fragmentPageInfo">Selecciona un documento para cargar fragmentos.</div>
-            <div class="pagination-btns">
-              <button id="fragmentPrev" class="btn-secondary btn-icon" style="padding: 6px 12px;" disabled>â</button>
-              <button id="fragmentNext" class="btn-secondary btn-icon" style="padding: 6px 12px;" disabled>âº</button>
-            </div>
+            <h3 style="font-family: var(--font-outfit); font-weight: 600; color: #fff; margin-bottom: 6px;">Ningún documento activo</h3>
+            <p class="description-text" style="max-width: 280px;">Selecciona una ordenanza de la biblioteca o sube un documento nuevo para comenzar a visualizar y buscar.</p>
           </div>
         </div>
       </section>
@@ -1528,6 +1575,10 @@ async def upload_files(request: Request, files: list[UploadFile] = File(...), in
             index_to_meili=index_to_meili,
         )
         processed.append(result)
+        
+        # Invalidate the cache for this document
+        doc_id = Path(result['markdown_path']).stem
+        _fragments_cache.pop(doc_id, None)
 
     result = {
         'message': 'Archivos procesados correctamente',
@@ -1579,42 +1630,48 @@ async def log_error(request: Request):
 
 @app.post('/api/buscar')
 def search_documents(payload: SearchRequest) -> dict:
-    try:
-        service = MeiliService.from_settings()
-        results = service.search(payload.query, payload.limit)
-        return {
-            'query': payload.query,
-            'limit': payload.limit,
-            'results': results,
-            'message': 'Resultados obtenidos desde Meilisearch',
-        }
-    except Exception as exc:
-        local_hits = []
+    if _meili_online:
         try:
-            documents = list_markdown_documents()
-            all_fragments = []
-            for doc in documents:
-                doc_id = doc['id']
-                fragments = build_fragments(doc_id, payload.query)
-                for frag in fragments:
-                    all_fragments.append({
-                        'id': frag['id'],
-                        'document_id': doc_id,
-                        'title': doc['title'],
-                        'section': frag['section'],
-                        'source': f"{doc_id}.md",
-                        'content_text': frag['content_text'],
-                        'score': frag['score']
-                    })
-            all_fragments.sort(key=lambda x: (-x['score'], x['id']))
-            local_hits = all_fragments[:payload.limit]
-            message = f"Resultados locales fallback (Meilisearch desconectado): {exc}"
-        except Exception as local_err:
-            message = f"No se pudo consultar Meilisearch: {exc}. Fallback local falló: {local_err}"
-            
-        return {
-            'query': payload.query,
-            'limit': payload.limit,
-            'results': {'hits': local_hits},
-            'message': message,
-        }
+            service = MeiliService.from_settings()
+            results = service.search(payload.query, payload.limit)
+            return {
+                'query': payload.query,
+                'limit': payload.limit,
+                'results': results,
+                'message': 'Resultados obtenidos desde Meilisearch',
+            }
+        except Exception:
+            pass
+
+    # Fallback to local search
+    local_hits = []
+    try:
+        documents = list_markdown_documents()
+        all_fragments = []
+        for doc in documents:
+            doc_id = doc['id']
+            fragments = build_fragments(doc_id, payload.query)
+            for frag in fragments:
+                all_fragments.append({
+                    'id': frag['id'],
+                    'document_id': doc_id,
+                    'title': doc['title'],
+                    'section': frag['section'],
+                    'chunk_number': frag['chunk_number'],
+                    'source': f"{doc_id}.md",
+                    'content_markdown': frag['content_markdown'],
+                    'content_text': frag['content_text'],
+                    'score': frag['score']
+                })
+        all_fragments.sort(key=lambda x: (-x['score'], x['id']))
+        local_hits = all_fragments[:payload.limit]
+        message = "Resultados locales fallback (Meilisearch desconectado)"
+    except Exception as local_err:
+        message = f"Fallback local falló: {local_err}"
+        
+    return {
+        'query': payload.query,
+        'limit': payload.limit,
+        'results': {'hits': local_hits},
+        'message': message,
+    }

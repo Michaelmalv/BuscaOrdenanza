@@ -45,6 +45,17 @@ async function init() {
     const diagInit = document.getElementById('diagInit');
     if (diagInit) { diagInit.textContent = 'EJECUTANDO...'; diagInit.style.color = '#f59e0b'; }
 
+    // Toggle diagnostics visibility using URL query parameter
+    const jsDiagnostics = document.getElementById('jsDiagnostics');
+    if (jsDiagnostics) {
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('debug') === '1') {
+        jsDiagnostics.style.display = 'flex';
+      } else {
+        jsDiagnostics.style.display = 'none';
+      }
+    }
+
     const searchForm = document.getElementById('searchForm');
     const resultBox = document.getElementById('resultBox');
     const searchResults = document.getElementById('searchResults');
@@ -443,7 +454,7 @@ async function init() {
         // Reset fragment filter inputs when opening a new document
         if (fragmentHint && fragmentHint.chunk_number) {
           currentFragmentQuery = '';
-          fragmentQuery.value = '';
+          if (fragmentQuery) fragmentQuery.value = '';
         }
 
         const targetPage = fragmentHint && fragmentHint.chunk_number
@@ -528,6 +539,7 @@ async function init() {
 
     // Load Local Document Fragments
     async function loadFragments(documentId, page = 1) {
+      if (!fragmentList) return;
       currentFragmentPage = page;
       fragmentList.innerHTML = '<p class="description-text" style="text-align: center; font-style: italic;">Descargando fragmentos...</p>';
 
@@ -564,7 +576,9 @@ async function init() {
         fragments.forEach((fragment) => {
           const button = document.createElement('button');
           button.type = 'button';
-          const isSelected = activeFragment && activeFragment.id === fragment.id;
+          const isSelected = activeFragment && 
+                             activeFragment.document_id === fragment.document_id && 
+                             String(activeFragment.chunk_number) === String(fragment.chunk_number);
           button.className = 'fragment-item' + (isSelected ? ' active' : '');
 
           const cleanPreview = (fragment.content_text || '').slice(0, 140).trim();
@@ -679,38 +693,46 @@ async function init() {
     });
 
     // Fragment searches / filtering inside viewer
-    fragmentSearch.addEventListener('click', async () => {
-      if (!activeDocumentId) {
-        return;
-      }
-      currentFragmentQuery = fragmentQuery.value.trim();
-      activeFragment = null;
-      await loadFragments(activeDocumentId, 1);
-    });
+    if (fragmentSearch) {
+      fragmentSearch.addEventListener('click', async () => {
+        if (!activeDocumentId) {
+          return;
+        }
+        currentFragmentQuery = fragmentQuery.value.trim();
+        activeFragment = null;
+        await loadFragments(activeDocumentId, 1);
+      });
+    }
 
-    fragmentClear.addEventListener('click', async () => {
-      if (!activeDocumentId) {
-        return;
-      }
-      fragmentQuery.value = '';
-      currentFragmentQuery = '';
-      activeFragment = null;
-      await loadFragments(activeDocumentId, 1);
-    });
+    if (fragmentClear) {
+      fragmentClear.addEventListener('click', async () => {
+        if (!activeDocumentId) {
+          return;
+        }
+        fragmentQuery.value = '';
+        currentFragmentQuery = '';
+        activeFragment = null;
+        await loadFragments(activeDocumentId, 1);
+      });
+    }
 
-    fragmentPrev.addEventListener('click', async () => {
-      if (!activeDocumentId || currentFragmentPage <= 1) {
-        return;
-      }
-      await loadFragments(activeDocumentId, currentFragmentPage - 1);
-    });
+    if (fragmentPrev) {
+      fragmentPrev.addEventListener('click', async () => {
+        if (!activeDocumentId || currentFragmentPage <= 1) {
+          return;
+        }
+        await loadFragments(activeDocumentId, currentFragmentPage - 1);
+      });
+    }
 
-    fragmentNext.addEventListener('click', async () => {
-      if (!activeDocumentId || currentFragmentPage >= currentFragmentTotalPages) {
-        return;
-      }
-      await loadFragments(activeDocumentId, currentFragmentPage + 1);
-    });
+    if (fragmentNext) {
+      fragmentNext.addEventListener('click', async () => {
+        if (!activeDocumentId || currentFragmentPage >= currentFragmentTotalPages) {
+          return;
+        }
+        await loadFragments(activeDocumentId, currentFragmentPage + 1);
+      });
+    }
 
     openRawMarkdown.addEventListener('click', () => {
       if (!activeDocumentId) {
