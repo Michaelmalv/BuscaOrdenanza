@@ -119,36 +119,46 @@ def list_uploaded_documents() -> list[dict]:
     documents: list[dict] = []
     if s3_client:
         try:
-            # 1. Obtener los stems de los markdown convertidos
-            md_response = s3_client.list_objects_v2(Bucket=settings.bucket_name, Prefix="markdown/")
+            # 1. Obtener los stems de los markdown convertidos usando un paginador
             converted_stems = set()
-            for obj in md_response.get('Contents', []):
-                key = obj['Key']
-                if key.endswith('.md'):
-                    converted_stems.add(Path(key).stem)
+            paginator = s3_client.get_paginator('list_objects_v2')
+            
+            md_pages = paginator.paginate(Bucket=settings.bucket_name, Prefix="markdown/")
+            for page in md_pages:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        key = obj['Key']
+                        if key.endswith('.md'):
+                            converted_stems.add(Path(key).stem)
 
-            # 2. Listar los archivos originales
-            up_response = s3_client.list_objects_v2(Bucket=settings.bucket_name, Prefix="uploads/")
-            for obj in up_response.get('Contents', []):
-                key = obj['Key']
-                filename = Path(key).name
-                stem = Path(key).stem
-                
-                parts = filename.split('_', 1)
-                if len(parts) > 1 and len(parts[0]) == 32 and all(c in '0123456789abcdefABCDEF' for c in parts[0]):
-                    original_filename = parts[1]
-                else:
-                    original_filename = filename
+            # 2. Listar los archivos originales usando un paginador
+            up_pages = paginator.paginate(Bucket=settings.bucket_name, Prefix="uploads/")
+            for page in up_pages:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        key = obj['Key']
+                        filename = Path(key).name
+                        stem = Path(key).stem
+                        
+                        # Evitar agregar la carpeta base
+                        if not filename:
+                            continue
+                            
+                        parts = filename.split('_', 1)
+                        if len(parts) > 1 and len(parts[0]) == 32 and all(c in '0123456789abcdefABCDEF' for c in parts[0]):
+                            original_filename = parts[1]
+                        else:
+                            original_filename = filename
 
-                documents.append(
-                    {
-                        'id': stem,
-                        'title': display_name_from_upload(filename),
-                        'filename': filename,
-                        'original_filename': original_filename,
-                        'converted': stem in converted_stems,
-                    }
-                )
+                        documents.append(
+                            {
+                                'id': stem,
+                                'title': display_name_from_upload(filename),
+                                'filename': filename,
+                                'original_filename': original_filename,
+                                'converted': stem in converted_stems,
+                            }
+                        )
         except Exception as e:
             print(f"Error listando uploads en R2: {e}")
         return sorted(documents, key=lambda x: x['title'])
