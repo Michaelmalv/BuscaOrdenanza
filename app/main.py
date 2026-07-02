@@ -815,10 +815,75 @@ def home(request: Request) -> HTMLResponse:
 
     @media (max-width: 992px) {
       main {
-        grid-template-columns: 1fr;
+        grid-template-columns: 1fr !important;
+        padding: 16px !important;
       }
-      .col-viewer, .col-sidebar {
-        grid-column: span 1;
+      .col {
+        display: none !important;
+      }
+      .col.mobile-visible {
+        display: flex !important;
+      }
+    }
+
+    /* Mobile Navigation Bar */
+    .mobile-nav {
+      display: none;
+      background: rgba(3, 7, 18, 0.95);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 16px;
+      position: sticky;
+      top: 85px;
+      z-index: 90;
+      justify-content: space-around;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    }
+    
+    .mobile-nav-btn {
+      flex: 1;
+      padding: 10px 6px;
+      font-size: 11px;
+      font-family: var(--font-outfit);
+      font-weight: 700;
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.3s ease;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .mobile-nav-btn:hover {
+      color: #fff;
+    }
+
+    .mobile-nav-btn.active {
+      color: #60a5fa;
+      background: rgba(59, 130, 246, 0.08);
+      border-radius: 10px;
+    }
+
+    .mobile-nav-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    @media (max-width: 992px) {
+      .mobile-nav {
+        display: flex;
+      }
+      header {
+        position: relative !important;
+      }
+      .mobile-nav {
+        position: sticky;
+        top: 0;
       }
     }
 
@@ -1479,9 +1544,32 @@ def home(request: Request) -> HTMLResponse:
     </div>
   </header>
 
+  <!-- Mobile responsive navigation tab bar -->
+  <nav class="mobile-nav">
+    <button id="mobileNavLib" class="mobile-nav-btn">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+      </svg>
+      <span>Biblioteca</span>
+    </button>
+    <button id="mobileNavSearch" class="mobile-nav-btn active">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+      </svg>
+      <span>Buscar</span>
+    </button>
+    <button id="mobileNavViewer" class="mobile-nav-btn">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+      </svg>
+      <span>Visor</span>
+    </button>
+  </nav>
+
   <main>
     <!-- Left Sidebar: Uploader & Document List -->
-    <div class="col col-sidebar">
+    <div id="colLibrary" class="col col-sidebar">
 
 
 
@@ -1503,7 +1591,7 @@ def home(request: Request) -> HTMLResponse:
     </div>
 
     <!-- Center Column: Search and Search results -->
-    <div class="col col-sidebar">
+    <div id="colSearch" class="col col-sidebar mobile-visible">
       <!-- Search card -->
       <section class="card">
         <span class="pill-badge" style="width: fit-content; background: rgba(139, 92, 246, 0.1); border-color: rgba(139, 92, 246, 0.15); color: #c084fc;">Búsqueda Semántica</span>
@@ -1542,7 +1630,7 @@ def home(request: Request) -> HTMLResponse:
     </div>
 
     <!-- Right Workspace: Document viewer and fragments navigation -->
-    <div class="col col-viewer">
+    <div id="colViewer" class="col col-viewer">
       <section class="card" style="flex: 1;">
         <div class="viewer-toolbar">
           <div class="logo-container">
@@ -1591,6 +1679,50 @@ def home(request: Request) -> HTMLResponse:
   </main>
 
   <script src="/api/app.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const btnLib = document.getElementById('mobileNavLib');
+      const btnSearch = document.getElementById('mobileNavSearch');
+      const btnViewer = document.getElementById('mobileNavViewer');
+
+      const colLib = document.getElementById('colLibrary');
+      const colSearch = document.getElementById('colSearch');
+      const colViewer = document.getElementById('colViewer');
+
+      function showMobileTab(tabName) {
+        if (!btnLib || !btnSearch || !btnViewer) return;
+        
+        btnLib.classList.remove('active');
+        btnSearch.classList.remove('active');
+        btnViewer.classList.remove('active');
+
+        colLib.classList.remove('mobile-visible');
+        colSearch.classList.remove('mobile-visible');
+        colViewer.classList.remove('mobile-visible');
+
+        if (tabName === 'library') {
+          btnLib.classList.add('active');
+          colLib.classList.add('mobile-visible');
+        } else if (tabName === 'search') {
+          btnSearch.classList.add('active');
+          colSearch.classList.add('mobile-visible');
+        } else if (tabName === 'viewer') {
+          btnViewer.classList.add('active');
+          colViewer.classList.add('mobile-visible');
+        }
+      }
+
+      if (btnLib && btnSearch && btnViewer) {
+        btnLib.addEventListener('click', () => showMobileTab('library'));
+        btnSearch.addEventListener('click', () => showMobileTab('search'));
+        btnViewer.addEventListener('click', () => showMobileTab('viewer'));
+      }
+
+      window.addEventListener('switch-to-viewer', () => {
+        showMobileTab('viewer');
+      });
+    });
+  </script>
 </body>
 </html>
         ''',

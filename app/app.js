@@ -423,7 +423,10 @@ async function init() {
       downloadOriginalPDF.disabled = false;
       viewerLoading.style.display = 'inline-block';
       markdownViewer.innerHTML = '<p class="description-text" style="text-align: center; font-style: italic;">Descargando contenido del documento...</p>';
-
+      
+      // Switch view to document viewer on mobile devices
+      window.dispatchEvent(new CustomEvent('switch-to-viewer'));
+      
       try {
         const response = await fetch(`/api/documentos/${encodeURIComponent(documentId)}/markdown?t=${Date.now()}`, { cache: 'no-store' });
         if (!response.ok) {
