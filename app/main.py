@@ -437,6 +437,91 @@ import time
 
 _meili_online = False
 
+_in_memory_index = None
+_in_memory_index_lock = threading.Lock()
+
+def get_in_memory_index():
+    global _in_memory_index
+    if _in_memory_index is not None:
+        return _in_memory_index
+    
+    with _in_memory_index_lock:
+        if _in_memory_index is not None:
+            return _in_memory_index
+        
+        start_time = time.time()
+        loaded = False
+        
+        # Try local gzip index first
+        local_path = BASE_DIR / "search_index.json.gz"
+        if local_path.exists():
+            print("[*] Cargando indice de busqueda comprimido desde archivo local...")
+            try:
+                import gzip
+                import json
+                with gzip.open(local_path, "rt", encoding="utf-8") as f:
+                    _in_memory_index = json.load(f)
+                loaded = True
+            except Exception as e:
+                print(f"Error cargando indice local: {e}")
+
+        # Try uncompressed local path as fallback
+        if not loaded:
+            local_raw_path = BASE_DIR / "search_index.json"
+            if local_raw_path.exists():
+                print("[*] Cargando indice de busqueda sin comprimir desde archivo local...")
+                try:
+                    import json
+                    with open(local_raw_path, "r", encoding="utf-8") as f:
+                        _in_memory_index = json.load(f)
+                    loaded = True
+                except Exception as e:
+                    print(f"Error cargando indice local sin comprimir: {e}")
+        
+        # Download compressed from R2
+        if not loaded:
+            print("[*] Descargando indice de busqueda comprimido desde Cloudflare R2...")
+            try:
+                s3 = get_s3_client()
+                if s3:
+                    response = s3.get_object(Bucket=settings.bucket_name, Key="search_index.json.gz")
+                    gzip_body = response['Body'].read()
+                    import gzip
+                    import json
+                    decompressed = gzip.decompress(gzip_body).decode('utf-8')
+                    _in_memory_index = json.loads(decompressed)
+                    loaded = True
+                else:
+                    print("[ERROR] No se pudo obtener el cliente de S3 para descargar el indice.")
+            except Exception as e:
+                print(f"[ERROR] Error descargando el indice de R2 (GZIP): {e}")
+
+        # Fallback to uncompressed R2 download
+        if not loaded:
+            print("[*] Descargando indice de busqueda sin comprimir desde Cloudflare R2...")
+            try:
+                s3 = get_s3_client()
+                if s3:
+                    response = s3.get_object(Bucket=settings.bucket_name, Key="search_index.json")
+                    content = response['Body'].read().decode('utf-8')
+                    import json
+                    _in_memory_index = json.loads(content)
+                    loaded = True
+            except Exception as e:
+                print(f"[ERROR] Error descargando el indice sin comprimir de R2: {e}")
+        
+        if not loaded or _in_memory_index is None:
+            _in_memory_index = []
+            return _in_memory_index
+            
+        # Precalculate lowercase search haystacks for high performance
+        print("[*] Precalculando indices de busqueda en memoria para velocidad instantanea...")
+        for chunk in _in_memory_index:
+            chunk['_haystack'] = f"{chunk.get('title', '')} {chunk.get('section', '')} {chunk.get('content_text', '')}".lower()
+            
+        print(f"[*] Indice completamente cargado y optimizado en {time.time() - start_time:.2f}s ({len(_in_memory_index)} fragmentos).")
+        return _in_memory_index
+
 def check_meili_loop():
     global _meili_online
     while True:
@@ -1865,31 +1950,73 @@ def search_documents(payload: SearchRequest) -> dict:
         except Exception:
             pass
 
-    # Fallback to local search
+    # Fallback to serverless in-memory search index
     local_hits = []
     try:
-        documents = list_markdown_documents()
-        all_fragments = []
-        for doc in documents:
-            doc_id = doc['id']
-            fragments = build_fragments(doc_id, payload.query)
-            for frag in fragments:
-                all_fragments.append({
-                    'id': frag['id'],
-                    'document_id': doc_id,
-                    'title': doc['title'],
-                    'section': frag['section'],
-                    'chunk_number': frag['chunk_number'],
-                    'source': f"{doc_id}.md",
-                    'content_markdown': frag['content_markdown'],
-                    'content_text': frag['content_text'],
-                    'score': frag['score']
-                })
-        all_fragments.sort(key=lambda x: (-x['score'], x['id']))
-        local_hits = all_fragments[:payload.limit]
-        message = "Resultados locales fallback (Meilisearch desconectado)"
+        index_data = get_in_memory_index()
+        if index_data:
+            query_str = payload.query.strip().lower()
+            parsed_query = parse_search_query(query_str) if query_str else []
+            
+            if parsed_query:
+                phrase_term = next((t['text'] for t in parsed_query if t['is_phrase']), None)
+                words_terms = [t for t in parsed_query if not t['is_phrase']]
+                required_words = [t['text'] for t in words_terms if t['required']]
+                
+                for chunk in index_data:
+                    haystack = chunk.get('_haystack')
+                    if haystack is None:
+                        # Fallback if not precalculated
+                        haystack = f"{chunk.get('title', '')} {chunk.get('section', '')} {chunk.get('content_text', '')}".lower()
+                        chunk['_haystack'] = haystack
+                    
+                    # Apply matching filter: all required terms must be present
+                    matched_all = True
+                    for word in required_words:
+                        if word not in haystack:
+                            matched_all = False
+                            break
+                    if not matched_all:
+                        continue
+                    
+                    # Calculate score
+                    score = 0
+                    matched_count = 0
+                    for t in words_terms:
+                        cnt = haystack.count(t['text'])
+                        if cnt > 0:
+                            matched_count += 1
+                            score += min(cnt, 5) * t['weight']
+                            
+                    if phrase_term and phrase_term in haystack:
+                        score += haystack.count(phrase_term) * 50000
+                        
+                    if matched_count > 0:
+                        score += matched_count * 10000
+                        
+                    if score > 0:
+                        local_hits.append({
+                            'id': chunk['id'],
+                            'document_id': chunk['document_id'],
+                            'title': chunk['title'],
+                            'section': chunk['section'],
+                            'chunk_number': chunk['chunk_number'],
+                            'source': chunk['source'],
+                            'content_markdown': '',
+                            'content_text': chunk['content_text'],
+                            'score': score
+                        })
+                
+                # Sort results by score descending, then by chunk number
+                local_hits.sort(key=lambda item: (-item['score'], item['chunk_number']))
+                local_hits = local_hits[:payload.limit]
+                message = "Resultados locales indexados en memoria (Meilisearch desconectado)"
+            else:
+                message = "Consulta vacía"
+        else:
+            message = "El indice de busqueda en memoria esta vacio o no se pudo cargar"
     except Exception as local_err:
-        message = f"Fallback local falló: {local_err}"
+        message = f"Busqueda serverless fallo: {local_err}"
         
     return {
         'query': payload.query,
