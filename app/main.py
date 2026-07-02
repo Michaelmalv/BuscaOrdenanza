@@ -13,7 +13,7 @@ from app.config import settings
 from app.models import SearchRequest
 from ingestion.meilisearch_client import MeiliService
 from ingestion.markdown_chunker import markdown_to_plain_text, split_markdown_by_headers
-from ingestion.workflow import process_uploaded_file
+from ingestion.workflow import process_uploaded_file, get_s3_client
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / 'data' / 'uploads'
@@ -82,60 +82,124 @@ def sync_manual_uploads() -> None:
 
 
 def list_markdown_documents() -> list[dict]:
-    MARKDOWN_DIR.mkdir(parents=True, exist_ok=True)
+    s3_client = get_s3_client()
     documents: list[dict] = []
+    if s3_client:
+        try:
+            response = s3_client.list_objects_v2(Bucket=settings.bucket_name, Prefix="markdown/")
+            for obj in response.get('Contents', []):
+                key = obj['Key']
+                if key.endswith('.md'):
+                    stem = Path(key).stem
+                    documents.append(
+                        {
+                            'id': stem,
+                            'title': humanize_stem(stem),
+                            'filename': Path(key).name,
+                        }
+                    )
+        except Exception as e:
+            print(f"Error listando markdown en R2: {e}")
+    else:
+        MARKDOWN_DIR.mkdir(parents=True, exist_ok=True)
+        for markdown_file in sorted(MARKDOWN_DIR.glob('*.md')):
+            documents.append(
+                {
+                    'id': markdown_file.stem,
+                    'title': humanize_stem(markdown_file.stem),
+                    'filename': markdown_file.name,
+                }
+            )
 
-    for markdown_file in sorted(MARKDOWN_DIR.glob('*.md')):
-        documents.append(
-            {
-                'id': markdown_file.stem,
-                'title': humanize_stem(markdown_file.stem),
-                'filename': markdown_file.name,
-            }
-        )
-
-    return documents
+    return sorted(documents, key=lambda x: x['title'])
 
 
 def list_uploaded_documents() -> list[dict]:
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Process new manual uploads before listing
-    sync_manual_uploads()
-    
+    s3_client = get_s3_client()
     documents: list[dict] = []
+    if s3_client:
+        try:
+            # 1. Obtener los stems de los markdown convertidos
+            md_response = s3_client.list_objects_v2(Bucket=settings.bucket_name, Prefix="markdown/")
+            converted_stems = set()
+            for obj in md_response.get('Contents', []):
+                key = obj['Key']
+                if key.endswith('.md'):
+                    converted_stems.add(Path(key).stem)
 
-    for uploaded_file in sorted(UPLOAD_DIR.iterdir()):
-        if not uploaded_file.is_file():
-            continue
+            # 2. Listar los archivos originales
+            up_response = s3_client.list_objects_v2(Bucket=settings.bucket_name, Prefix="uploads/")
+            for obj in up_response.get('Contents', []):
+                key = obj['Key']
+                filename = Path(key).name
+                stem = Path(key).stem
+                
+                parts = filename.split('_', 1)
+                if len(parts) > 1 and len(parts[0]) == 32 and all(c in '0123456789abcdefABCDEF' for c in parts[0]):
+                    original_filename = parts[1]
+                else:
+                    original_filename = filename
 
-        markdown_file = MARKDOWN_DIR / f'{uploaded_file.stem}.md'
+                documents.append(
+                    {
+                        'id': stem,
+                        'title': display_name_from_upload(filename),
+                        'filename': filename,
+                        'original_filename': original_filename,
+                        'converted': stem in converted_stems,
+                    }
+                )
+        except Exception as e:
+            print(f"Error listando uploads en R2: {e}")
+        return sorted(documents, key=lambda x: x['title'])
+    else:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         
-        # Calculate clean original filename display
-        parts = uploaded_file.name.split('_', 1)
-        if len(parts) > 1 and len(parts[0]) == 32 and all(c in '0123456789abcdefABCDEF' for c in parts[0]):
-            original_filename = parts[1]
-        else:
-            original_filename = uploaded_file.name
+        # Process new manual uploads before listing
+        sync_manual_uploads()
+        
+        for uploaded_file in sorted(UPLOAD_DIR.iterdir()):
+            if not uploaded_file.is_file():
+                continue
 
-        documents.append(
-            {
-                'id': uploaded_file.stem,
-                'title': display_name_from_upload(uploaded_file.name),
-                'filename': uploaded_file.name,
-                'original_filename': original_filename,
-                'converted': markdown_file.exists(),
-            }
-        )
+            markdown_file = MARKDOWN_DIR / f'{uploaded_file.stem}.md'
+            
+            # Calculate clean original filename display
+            parts = uploaded_file.name.split('_', 1)
+            if len(parts) > 1 and len(parts[0]) == 32 and all(c in '0123456789abcdefABCDEF' for c in parts[0]):
+                original_filename = parts[1]
+            else:
+                original_filename = uploaded_file.name
 
-    return documents
+            documents.append(
+                {
+                    'id': uploaded_file.stem,
+                    'title': display_name_from_upload(uploaded_file.name),
+                    'filename': uploaded_file.name,
+                    'original_filename': original_filename,
+                    'converted': markdown_file.exists(),
+                }
+            )
+
+        return documents
 
 
 def read_markdown_document(document_id: str) -> str:
-    markdown_path = MARKDOWN_DIR / f'{document_id}.md'
-    if not markdown_path.exists():
-        raise FileNotFoundError(document_id)
-    return markdown_path.read_text(encoding='utf-8')
+    s3_client = get_s3_client()
+    if s3_client:
+        try:
+            response = s3_client.get_object(Bucket=settings.bucket_name, Key=f"markdown/{document_id}.md")
+            return response['Body'].read().decode('utf-8')
+        except s3_client.exceptions.NoSuchKey:
+            raise FileNotFoundError(document_id)
+        except Exception as e:
+            print(f"Error descargando markdown de R2 para {document_id}: {e}")
+            raise FileNotFoundError(document_id)
+    else:
+        markdown_path = MARKDOWN_DIR / f'{document_id}.md'
+        if not markdown_path.exists():
+            raise FileNotFoundError(document_id)
+        return markdown_path.read_text(encoding='utf-8')
 
 
 SPANISH_STOP_WORDS = {
@@ -204,10 +268,23 @@ def parse_search_query(query_str: str) -> list[dict]:
 def score_fragment_parsed(haystack: str, parsed_query: list[dict]) -> int:
     if not parsed_query:
         return 0
+    
     score = 0
+    matched_terms = 0
+    
     for term in parsed_query:
         count = haystack.count(term['text'])
-        score += count * term['weight']
+        if count > 0:
+            if not term['is_phrase']:
+                matched_terms += 1
+                # Cap the word frequency contribution to avoid keyword-stuffing skew
+                score += min(count, 5) * term['weight']
+            else:
+                # Massive boost for exact phrase match
+                score += count * 50000
+                
+    # Boost for matching more unique terms
+    score += matched_terms * 10000
     return score
 
 
@@ -227,13 +304,12 @@ def get_cached_fragments(document_id: str) -> list[dict]:
     if document_id in _fragments_cache:
         return _fragments_cache[document_id]
 
-    # Try loading from the pre-computed JSON file
-    json_path = JSON_DIR / f'{document_id}.json'
-    if json_path.exists():
+    s3_client = get_s3_client()
+    if s3_client:
         try:
             import json
-            with open(json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            response = s3_client.get_object(Bucket=settings.bucket_name, Key=f"json/{document_id}.json")
+            data = json.loads(response['Body'].read().decode('utf-8'))
             fragments = []
             for chunk in data:
                 c_markdown = chunk.get('content_markdown', '').strip()
@@ -251,9 +327,35 @@ def get_cached_fragments(document_id: str) -> list[dict]:
             _fragments_cache[document_id] = fragments
             return fragments
         except Exception as e:
-            print(f"Error loading JSON cache for {document_id}: {e}")
+            print(f"Error descargando o parseando JSON cache de R2 para {document_id}: {e}")
+    else:
+        # Try loading from the pre-computed JSON file locally
+        json_path = JSON_DIR / f'{document_id}.json'
+        if json_path.exists():
+            try:
+                import json
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                fragments = []
+                for chunk in data:
+                    c_markdown = chunk.get('content_markdown', '').strip()
+                    if not c_markdown:
+                        continue
+                    fragments.append({
+                        'id': f"{document_id}-fragment-{chunk['chunk_number']}",
+                        'document_id': document_id,
+                        'chunk_number': chunk['chunk_number'],
+                        'section': chunk.get('section', ''),
+                        'content_markdown': c_markdown,
+                        'content_text': chunk.get('content_text', ''),
+                        'char_count': len(c_markdown),
+                    })
+                _fragments_cache[document_id] = fragments
+                return fragments
+            except Exception as e:
+                print(f"Error loading local JSON cache for {document_id}: {e}")
 
-    # Fallback: parse Markdown
+    # Fallback: parse Markdown (works both locally and with R2 via updated read_markdown_document)
     fragments = build_fragments_from_markdown(document_id)
     _fragments_cache[document_id] = fragments
     return fragments
@@ -350,6 +452,9 @@ def check_meili_loop():
 def warm_cache():
     try:
         documents = list_markdown_documents()
+        if len(documents) > 100:
+            print(f"[!] Gran cantidad de documentos detectados ({len(documents)}). Precalentando caché en segundo plano de manera diferida...")
+        
         for doc in documents:
             doc_id = doc['id']
             get_cached_fragments(doc_id)
@@ -1457,29 +1562,26 @@ def api_document_markdown_raw(document_id: str) -> str:
 
 @app.get('/api/documentos/{document_id}/pdf')
 def api_document_pdf(document_id: str, download: bool = Query(default=False)):
-    from fastapi.responses import FileResponse
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    for uploaded_file in UPLOAD_DIR.iterdir():
-        if uploaded_file.is_file() and uploaded_file.stem == document_id:
-            if uploaded_file.suffix.lower() == '.pdf':
-                if download:
-                    return FileResponse(
-                        path=uploaded_file, 
-                        media_type='application/pdf', 
-                        filename=uploaded_file.name
-                    )
-                else:
-                    return FileResponse(
-                        path=uploaded_file, 
-                        media_type='application/pdf', 
-                        headers={
-                            "Content-Disposition": "inline",
-                            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                            "Pragma": "no-cache",
-                            "Expires": "0"
-                        }
-                    )
-            else:
+    from fastapi.responses import RedirectResponse, FileResponse
+    
+    s3_client = get_s3_client()
+    if s3_client:
+        # R2 mode: generate presigned URL
+        try:
+            response = s3_client.list_objects_v2(Bucket=settings.bucket_name, Prefix=f"uploads/{document_id}")
+            matching_key = None
+            for obj in response.get('Contents', []):
+                key = obj['Key']
+                if Path(key).stem == document_id:
+                    matching_key = key
+                    break
+
+            if not matching_key:
+                raise HTTPException(status_code=404, detail="PDF no encontrado en R2")
+
+            # Si el documento original no es un PDF (por ejemplo, Word .doc/.docx), devolvemos el HTML de advertencia
+            suffix = Path(matching_key).suffix.lower()
+            if suffix != '.pdf':
                 return HTMLResponse(
                     content='''
                     <!DOCTYPE html>
@@ -1543,7 +1645,121 @@ def api_document_pdf(document_id: str, download: bool = Query(default=False)):
                     ''',
                     status_code=200
                 )
-    raise HTTPException(status_code=404, detail='PDF no encontrado')
+
+            # Determinar si es descarga o previsualización
+            response_params = {}
+            if download:
+                original_filename = Path(matching_key).name
+                parts = original_filename.split('_', 1)
+                if len(parts) > 1 and len(parts[0]) == 32 and all(c in '0123456789abcdefABCDEF' for c in parts[0]):
+                    display_name = parts[1]
+                else:
+                    display_name = original_filename
+                response_params['ResponseContentDisposition'] = f'attachment; filename="{display_name}"'
+            else:
+                response_params['ResponseContentDisposition'] = 'inline'
+
+            presigned_url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': settings.bucket_name,
+                    'Key': matching_key,
+                    **response_params
+                },
+                ExpiresIn=900
+            )
+            return RedirectResponse(url=presigned_url, status_code=307)
+        except Exception as e:
+            print(f"Error generando URL firmada para {document_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Error al obtener PDF desde la nube: {e}")
+    else:
+        # Fallback local
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        for uploaded_file in UPLOAD_DIR.iterdir():
+            if uploaded_file.is_file() and uploaded_file.stem == document_id:
+                if uploaded_file.suffix.lower() == '.pdf':
+                    if download:
+                        return FileResponse(
+                            path=uploaded_file, 
+                            media_type='application/pdf', 
+                            filename=uploaded_file.name
+                        )
+                    else:
+                        return FileResponse(
+                            path=uploaded_file, 
+                            media_type='application/pdf', 
+                            headers={
+                                "Content-Disposition": "inline",
+                                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                                "Pragma": "no-cache",
+                                "Expires": "0"
+                            }
+                        )
+                else:
+                    return HTMLResponse(
+                        content='''
+                        <!DOCTYPE html>
+                        <html lang="es">
+                        <head>
+                            <meta charset="utf-8">
+                            <style>
+                                body {
+                                    margin: 0;
+                                    padding: 0;
+                                    background: #030712;
+                                    color: #9ca3af;
+                                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                                    display: flex;
+                                    flex-direction: column;
+                                    justify-content: center;
+                                    align-items: center;
+                                    height: 100vh;
+                                    text-align: center;
+                                }
+                                .card {
+                                    background: rgba(17, 24, 39, 0.6);
+                                    border: 1px solid rgba(255, 255, 255, 0.08);
+                                    border-radius: 16px;
+                                    padding: 32px 24px;
+                                    max-width: 360px;
+                                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+                                }
+                                h3 {
+                                    color: #fff;
+                                    font-size: 18px;
+                                    margin-top: 0;
+                                    margin-bottom: 8px;
+                                }
+                                p {
+                                    font-size: 13px;
+                                    line-height: 1.6;
+                                    margin-bottom: 16px;
+                                }
+                                .hint {
+                                    font-size: 11px;
+                                    color: #6b7280;
+                                }
+                                svg {
+                                    color: #f59e0b;
+                                    margin-bottom: 16px;
+                                }
+                            </style>
+                        </head>
+                        <body>
+                            <div class="card">
+                                <svg width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                </svg>
+                                <h3>Documento Original Word</h3>
+                                <p>Este documento fue importado desde un archivo de Microsoft Word (.doc/.docx). Por lo tanto, no posee un archivo PDF original para previsualizar directamente.</p>
+                                <div class="hint">Utiliza las pestañas "Lectura Completa" o "Fragmento Seleccionado" para ver el texto.</div>
+                            </div>
+                        </body>
+                        </html>
+                        ''',
+                        status_code=200
+                    )
+        raise HTTPException(status_code=404, detail='PDF no encontrado')
 
 
 @app.post('/api/subida-archivos', response_model=None)

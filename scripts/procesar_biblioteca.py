@@ -1,22 +1,54 @@
-from pathlib import Path
-import sys
 import os
+import sys
+import time
+from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from ingestion.workflow import process_uploaded_file
 from app.main import sanitize_filename
 
 UPLOAD_DIR = ROOT_DIR / 'data' / 'uploads'
 MARKDOWN_DIR = ROOT_DIR / 'data' / 'markdown'
 JSON_DIR = ROOT_DIR / 'data' / 'json'
 
+def worker_process_file(args):
+    path_str, markdown_dir_str, json_dir_str = args
+    from ingestion.workflow import process_uploaded_file
+    
+    t0 = time.time()
+    try:
+        res = process_uploaded_file(
+            input_path=path_str,
+            markdown_dir=markdown_dir_str,
+            json_dir=json_dir_str,
+            index_to_meili=False
+        )
+        return {
+            'status': 'success',
+            'filename': Path(path_str).name,
+            'time': time.time() - t0,
+            'docs_created': res.get('documents_created', 0)
+        }
+    except Exception as e:
+        return {
+            'status': 'error',
+            'filename': Path(path_str).name,
+            'time': time.time() - t0,
+            'error': str(e)
+        }
+
 def main():
+    # Force UTF-8 encoding for stdout
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+
     print("=" * 60)
-    print(" PIPELINE DE PROCESAMIENTO MASIVO OFFLINE - BUSCA ORDENANZA ")
+    print(" PIPELINE DE PROCESAMIENTO MASIVO PARALELO - BUSCA ORDENANZA ")
     print("=" * 60)
+    sys.stdout.flush()
     
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     MARKDOWN_DIR.mkdir(parents=True, exist_ok=True)
@@ -50,57 +82,107 @@ def main():
     
     total = len(pdf_files)
     print(f"\nSe encontraron {total} archivos de documentos en 'data/uploads/'.")
+    sys.stdout.flush()
     
-    # 2. Process missing ones
+    # 2. Verificar cuáles archivos ya están en R2 para evitar doble trabajo y limpiar disco local
+    already_uploaded = set()
+    from ingestion.workflow import get_s3_client
+    from app.config import settings
+    s3_client = get_s3_client()
+    if s3_client:
+        try:
+            print("\nConsultando Cloudflare R2 para identificar documentos ya subidos...")
+            sys.stdout.flush()
+            paginator = s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=settings.bucket_name, Prefix="uploads/")
+            for page in pages:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        key = obj['Key']
+                        filename = key.split('/')[-1]
+                        if filename:
+                            already_uploaded.add(filename)
+            print(f"Se encontraron {len(already_uploaded)} documentos ya subidos con éxito en Cloudflare R2.")
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"Advertencia al consultar R2: {e}. Se procesarán todos los archivos locales.")
+            sys.stdout.flush()
+
     pending_files = []
+    skipped_count = 0
     for path in pdf_files:
-        markdown_file = MARKDOWN_DIR / f'{path.stem}.md'
-        json_file = JSON_DIR / f'{path.stem}.json'
-        if not markdown_file.exists() or not json_file.exists():
+        if path.name in already_uploaded:
+            try:
+                path.unlink()
+            except Exception:
+                pass
+            skipped_count += 1
+        else:
             pending_files.append(path)
-            
+
+    if skipped_count > 0:
+        print(f"Omitidos (ya están en Cloudflare R2 y se limpiaron localmente): {skipped_count} documentos.")
+        sys.stdout.flush()
+
     total_pending = len(pending_files)
-    print(f"Pendientes de procesamiento: {total_pending} / {total} documentos.")
+    print(f"Pendientes de procesamiento real: {total_pending} documentos.")
+    sys.stdout.flush()
     
     if total_pending == 0:
-        print("\n¡Todos los documentos ya han sido procesados y convertidos con éxito!")
-        print("Puedes iniciar el servidor web y verlos inmediatamente.")
+        print("\n¡Todos los documentos ya han sido procesados y subidos con éxito!")
+        sys.stdout.flush()
         return
         
-    print("\nIniciando conversión masiva en segundo plano...")
+    max_workers = 4
+    print(f"\nIniciando conversión y subida a R2 con {max_workers} procesos en paralelo...")
     print("Presiona Ctrl + C en cualquier momento para pausar de forma segura.")
     print("-" * 60)
+    sys.stdout.flush()
     
     processed_count = 0
     error_count = 0
+    total_docs_created = 0
     
-    for idx, path in enumerate(pending_files, 1):
-        percent = (idx / total_pending) * 100
-        print(f"\n[{idx}/{total_pending}] ({percent:.1f}%) Procesando: {path.name}")
-        try:
-            process_uploaded_file(
-                input_path=str(path),
-                markdown_dir=str(MARKDOWN_DIR),
-                json_dir=str(JSON_DIR),
-                index_to_meili=False # Do not index to Meili directly, local fallback is fast
-            )
-            processed_count += 1
-            print(f"  --> Éxito: Markdown y JSON generados.")
-        except KeyboardInterrupt:
-            print("\nProcesamiento pausado por el usuario de forma segura.")
-            break
-        except Exception as e:
-            error_count += 1
-            print(f"  --> ERROR procesando {path.name}: {e}")
+    start_time = time.time()
+    
+    # Prepare arguments for workers
+    worker_args = [(str(path), str(MARKDOWN_DIR), str(JSON_DIR)) for path in pending_files]
+    
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(worker_process_file, arg): arg for arg in worker_args}
             
+            for idx, future in enumerate(as_completed(futures), 1):
+                res = future.result()
+                filename = res['filename']
+                dur = res['time']
+                percent = (idx / total_pending) * 100
+                
+                if res['status'] == 'success':
+                    processed_count += 1
+                    total_docs_created += res['docs_created']
+                    print(f"[{idx}/{total_pending}] ({percent:.1f}%) Éxito: {filename} ({res['docs_created']} fragmentos) en {dur:.1f}s")
+                else:
+                    error_count += 1
+                    print(f"[{idx}/{total_pending}] ({percent:.1f}%) [ERROR] {filename}: {res.get('error')}")
+                
+                sys.stdout.flush()
+                
+    except KeyboardInterrupt:
+        print("\nProcesamiento pausado por el usuario de forma segura.")
+        sys.stdout.flush()
+        
+    elapsed = time.time() - start_time
     print("\n" + "=" * 60)
     print(" PROCESAMIENTO COMPLETADO ")
     print("=" * 60)
+    print(f"Tiempo total: {elapsed/60:.2f} minutos")
     print(f"Procesados exitosamente: {processed_count}")
     print(f"Errores en conversión: {error_count}")
-    print(f"Total en biblioteca actual: {total - total_pending + processed_count} / {total}")
+    print(f"Total fragmentos indexables creados: {total_docs_created}")
     print("\n¡Ya puedes recargar la aplicación web en tu navegador!")
     print("=" * 60)
+    sys.stdout.flush()
 
 if __name__ == '__main__':
     main()

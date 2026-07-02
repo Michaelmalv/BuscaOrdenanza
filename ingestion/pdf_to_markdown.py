@@ -11,13 +11,16 @@ def extract_fallback_markdown(input_path: str) -> str:
     """
     doc = fitz.open(input_path)
     md_text = []
-    for page in doc:
-        md_text.append(f"\n\n## Página {page.number + 1}\n\n")
-        text = page.get_text("text")
-        if text.strip():
-            md_text.append(text)
-        else:
-            md_text.append("*[Página sin texto legible extraíble]*\n")
+    try:
+        for page in doc:
+            md_text.append(f"\n\n## Página {page.number + 1}\n\n")
+            text = page.get_text("text")
+            if text.strip():
+                md_text.append(text)
+            else:
+                md_text.append("*[Página sin texto legible extraíble]*\n")
+    finally:
+        doc.close()
     return "".join(md_text)
 
 
@@ -32,11 +35,27 @@ def convert_to_md(input_path: str, output_dir: str) -> str:
     output_path = os.path.join(output_dir, f'{file_name}.md')
 
     # 1. Intentar conversión estructurada con pymupdf4llm
+    md_text = ""
+    is_vector_heavy = False
     try:
-        md_text = pymupdf4llm.to_markdown(input_path, use_ocr=False)
+        # Safeguard: check for vector-heavy layout maps or plans
+        doc = fitz.open(input_path)
+        for page in doc[:10]:
+            if len(page.get_drawings()) > 150:
+                is_vector_heavy = True
+                break
+        doc.close()
     except Exception as e:
-        print(f"Advertencia en to_markdown para {file_name}: {e}. Usando fallback.")
-        md_text = ""
+        pass
+
+    if is_vector_heavy:
+        print(f"--> ¡Activado Fallback por planos vectoriales pesados para {file_name}!")
+    else:
+        try:
+            md_text = pymupdf4llm.to_markdown(input_path, show_progress=False)
+        except Exception as e:
+            print(f"Advertencia en to_markdown para {file_name}: {e}. Usando fallback.")
+            md_text = ""
 
     # 2. Control de calidad: ¿Se omitió el texto debido a planos o vectores complejos?
     # Limpiar el markdown generado de los marcadores de imágenes omitidas
