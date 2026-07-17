@@ -1062,9 +1062,16 @@ def home(request: Request) -> HTMLResponse:
       display: flex;
       align-items: center;
       gap: 6px;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .doc-filename {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      min-width: 0;
+      flex: 1;
     }
 
     .indicator-tag {

@@ -182,7 +182,7 @@ async function init() {
               <span class="dot-pulse"></span>
               <span>${tagText}</span>
             </span>
-            <span>${escapeHtml(doc.original_filename || doc.filename)}</span>
+            <span class="doc-filename" title="${escapeHtml(doc.original_filename || doc.filename)}">${escapeHtml(doc.original_filename || doc.filename)}</span>
           </div>
         `;
         
