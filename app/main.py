@@ -1529,6 +1529,18 @@ def home(request: Request) -> HTMLResponse:
             <h3 class="card-title">Consultar</h3>
             <p class="description-text" style="margin-bottom: 12px;">Busca de forma instantánea en todas las ordenanzas de la biblioteca.</p>
             
+            <!-- Opciones de búsqueda -->
+            <div class="search-options" style="display: flex; gap: 20px; margin-bottom: 16px; margin-top: 4px;">
+              <label class="radio-label" style="display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text);">
+                <input type="radio" name="searchMode" value="inside" checked style="accent-color: var(--primary); cursor: pointer; width: 15px; height: 15px;">
+                <span>Dentro de los documentos</span>
+              </label>
+              <label class="radio-label" style="display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text-muted);">
+                <input type="radio" name="searchMode" value="title" style="accent-color: var(--primary); cursor: pointer; width: 15px; height: 15px;">
+                <span>Buscar por título</span>
+              </label>
+            </div>
+
             <form id="searchForm" class="input-wrapper">
               <input id="query" name="query" type="text" placeholder="Palabras clave a buscar..." required>
               <button type="submit" class="btn-primary">

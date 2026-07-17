@@ -705,7 +705,7 @@ async function init() {
 
 
 
-    // Global Search against Meilisearch
+    // Global Search (either semantic inside documents, or simple matching by title)
     searchForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const query = document.getElementById('query').value.trim();
@@ -714,16 +714,20 @@ async function init() {
         return;
       }
 
-      searchResults.innerHTML = '<p class="description-text" style="text-align: center; font-style: italic;"><span class="loading-pulse" style="margin-right: 6px; vertical-align: middle;"></span> Consultando Meilisearch...</p>';
+      // Check selected search mode
+      const searchModeRadio = document.querySelector('input[name="searchMode"]:checked');
+      const searchMode = searchModeRadio ? searchModeRadio.value : 'inside';
 
-      try {
-        const response = await fetch('/api/buscar', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, limit: 10 }),
+      if (searchMode === 'title') {
+        // Search by Document Title in local memory
+        searchResults.innerHTML = '<p class="description-text" style="text-align: center; font-style: italic;"><span class="loading-pulse" style="margin-right: 6px; vertical-align: middle;"></span> Buscando títulos...</p>';
+        
+        const queryLower = query.toLowerCase();
+        const matchedDocs = allLoadedDocuments.filter(doc => {
+          return (doc.title || '').toLowerCase().includes(queryLower) ||
+                 (doc.original_filename || doc.filename || '').toLowerCase().includes(queryLower);
         });
-        const data = await response.json();
-        const hits = data.results?.hits || [];
+
         activeSearchQuery = query;
 
         // Re-highlight active document viewer if active
@@ -731,48 +735,101 @@ async function init() {
           setViewMode(viewMode);
         }
 
-        if (!hits.length) {
-          searchResults.innerHTML = '<p class="description-text" style="text-align: center; font-style: italic; color: var(--warning);">Ningún resultado encontrado.</p>';
-          if (resultBox) resultBox.textContent = JSON.stringify(data, null, 2);
+        if (!matchedDocs.length) {
+          searchResults.innerHTML = '<p class="description-text" style="text-align: center; font-style: italic; color: var(--warning);">Ningún documento coincide con ese título.</p>';
           return;
         }
 
-        if (resultBox) resultBox.textContent = JSON.stringify(data, null, 2);
         searchResults.innerHTML = '';
-
-        hits.forEach((hit) => {
+        matchedDocs.forEach((doc) => {
           const item = document.createElement('div');
           item.className = 'result-item';
 
-          const titleText = hit.title || hit.document_id || 'Documento';
-
           item.innerHTML = `
             <div class="result-item-header">
-              <h4>${escapeHtml(titleText)}</h4>
-              <span class="result-score">Score: ${escapeHtml(hit.score || 0)}</span>
+              <h4>${escapeHtml(doc.title)}</h4>
+              <span class="result-score" style="background: rgba(22, 163, 74, 0.08); color: var(--success); border-color: rgba(22, 163, 74, 0.15);">Título</span>
             </div>
             <div class="result-meta">
-              <span>Sección: <strong>${escapeHtml(hit.section || 'General')}</strong></span>
-              <span>Archivo: <strong style="color: var(--text);">${escapeHtml(hit.source || '')}</strong></span>
+              <span>Categoría: <strong>${escapeHtml(doc.category)}</strong></span>
+              <span>Archivo: <strong style="color: var(--text);">${escapeHtml(doc.original_filename || doc.filename)}</strong></span>
             </div>
-            <div class="result-text">${escapeHtml((hit.content_text || '').slice(0, 300))}...</div>
-            <button type="button" class="btn-secondary" style="margin-top: 10px; padding: 6px 14px; font-size: 11px;" data-document="${escapeHtml(hit.document_id || '')}">
-              Ver fragmento exacto
+            <div class="result-text" style="font-style: italic; color: var(--text-muted);">
+              Coincidencia encontrada en el título del documento. Haz clic abajo para abrir el archivo en el visor.
+            </div>
+            <button type="button" class="btn-primary" style="margin-top: 10px; padding: 6px 14px; font-size: 11px;" data-document="${escapeHtml(doc.id)}">
+              Abrir documento
             </button>
           `;
 
-          // Apply DOM highlighting inside the snippet preview text block
-          const snippetTextDiv = item.querySelector('.result-text');
-          highlightDOM(snippetTextDiv, query);
-
           const button = item.querySelector('button[data-document]');
           if (button) {
-            button.addEventListener('click', () => loadMarkdown(hit.document_id, hit));
+            button.addEventListener('click', () => loadMarkdown(doc.id));
           }
           searchResults.appendChild(item);
         });
-      } catch (error) {
-        searchResults.innerHTML = `<p class="description-text" style="text-align: center; color: var(--warning);">Error: ${error}</p>`;
+      } else {
+        // Search inside documents (Semantic search)
+        searchResults.innerHTML = '<p class="description-text" style="text-align: center; font-style: italic;"><span class="loading-pulse" style="margin-right: 6px; vertical-align: middle;"></span> Consultando base de datos...</p>';
+
+        try {
+          const response = await fetch('/api/buscar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, limit: 10 }),
+          });
+          const data = await response.json();
+          const hits = data.results?.hits || [];
+          activeSearchQuery = query;
+
+          // Re-highlight active document viewer if active
+          if (activeDocumentId) {
+            setViewMode(viewMode);
+          }
+
+          if (!hits.length) {
+            searchResults.innerHTML = '<p class="description-text" style="text-align: center; font-style: italic; color: var(--warning);">Ningún resultado encontrado.</p>';
+            if (resultBox) resultBox.textContent = JSON.stringify(data, null, 2);
+            return;
+          }
+
+          if (resultBox) resultBox.textContent = JSON.stringify(data, null, 2);
+          searchResults.innerHTML = '';
+
+          hits.forEach((hit) => {
+            const item = document.createElement('div');
+            item.className = 'result-item';
+
+            const titleText = hit.title || hit.document_id || 'Documento';
+
+            item.innerHTML = `
+              <div class="result-item-header">
+                <h4>${escapeHtml(titleText)}</h4>
+                <span class="result-score">Score: ${escapeHtml(hit.score || 0)}</span>
+              </div>
+              <div class="result-meta">
+                <span>Sección: <strong>${escapeHtml(hit.section || 'General')}</strong></span>
+                <span>Archivo: <strong style="color: var(--text);">${escapeHtml(hit.source || '')}</strong></span>
+              </div>
+              <div class="result-text">${escapeHtml((hit.content_text || '').slice(0, 300))}...</div>
+              <button type="button" class="btn-secondary" style="margin-top: 10px; padding: 6px 14px; font-size: 11px;" data-document="${escapeHtml(hit.document_id || '')}">
+                Ver fragmento exacto
+              </button>
+            `;
+
+            // Apply DOM highlighting inside the snippet preview text block
+            const snippetTextDiv = item.querySelector('.result-text');
+            highlightDOM(snippetTextDiv, query);
+
+            const button = item.querySelector('button[data-document]');
+            if (button) {
+              button.addEventListener('click', () => loadMarkdown(hit.document_id, hit));
+            }
+            searchResults.appendChild(item);
+          });
+        } catch (error) {
+          searchResults.innerHTML = `<p class="description-text" style="text-align: center; color: var(--warning);">Error: ${error}</p>`;
+        }
       }
     });
 
@@ -841,7 +898,24 @@ async function init() {
       window.open(`/api/documentos/${encodeURIComponent(activeDocumentId)}/pdf?download=true`, '_blank', 'noopener,noreferrer');
     });
 
-    refreshDocs.addEventListener('click', loadDocuments);
+    if (refreshDocs) {
+      refreshDocs.addEventListener('click', loadDocuments);
+    }
+
+    // Switch searchMode label colors
+    const searchModeRadios = document.querySelectorAll('input[name="searchMode"]');
+    if (searchModeRadios.length) {
+      searchModeRadios.forEach(radio => {
+        radio.addEventListener('change', () => {
+          searchModeRadios.forEach(r => {
+            const label = r.closest('.radio-label');
+            if (label) {
+              label.style.color = r.checked ? 'var(--text)' : 'var(--text-muted)';
+            }
+          });
+        });
+      });
+    }
 
     // Initial triggers
     checkMeilisearchStatus();
