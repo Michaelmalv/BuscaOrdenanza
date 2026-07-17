@@ -1415,6 +1415,33 @@ def home(request: Request) -> HTMLResponse:
         padding: 0 16px 16px 16px;
       }
     }
+
+    @media (min-width: 993px) {
+      body {
+        height: 100vh !important;
+        overflow: hidden !important;
+      }
+      .app-container {
+        height: 100vh !important;
+        overflow: hidden !important;
+      }
+      main {
+        height: 100vh !important;
+        overflow: hidden !important;
+      }
+      .sidebar-menu {
+        height: 100vh !important;
+        overflow: hidden !important;
+      }
+      .col-content {
+        height: 100vh !important;
+        overflow: hidden !important;
+      }
+      .col-viewer {
+        height: 100vh !important;
+        overflow: hidden !important;
+      }
+    }
   </style>
 </head>
 <body>
