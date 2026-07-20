@@ -1134,8 +1134,9 @@ def home(request: Request) -> HTMLResponse:
       flex-direction: column;
       gap: 12px;
       overflow-y: auto;
+      overflow-x: hidden;
       flex: 1;
-      padding: 0 24px 24px 24px;
+      padding: 0 20px 24px 20px;
     }
 
     .result-item {
@@ -1147,6 +1148,9 @@ def home(request: Request) -> HTMLResponse:
       display: flex;
       flex-direction: column;
       gap: 6px;
+      min-width: 0;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .result-item:hover {
@@ -1159,6 +1163,7 @@ def home(request: Request) -> HTMLResponse:
       justify-content: space-between;
       align-items: flex-start;
       gap: 10px;
+      min-width: 0;
     }
 
     .result-item h4 {
@@ -1166,6 +1171,8 @@ def home(request: Request) -> HTMLResponse:
       font-weight: 600;
       font-size: 13px;
       color: var(--text);
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .result-score {
@@ -1187,12 +1194,24 @@ def home(request: Request) -> HTMLResponse:
       gap: 4px 10px;
       border-bottom: 1px dashed var(--border);
       padding-bottom: 6px;
+      min-width: 0;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .result-meta span {
+      min-width: 0;
+      max-width: 100%;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .result-text {
       font-size: 12.5px;
       color: #334155;
       line-height: 1.5;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     /* Viewer styles */

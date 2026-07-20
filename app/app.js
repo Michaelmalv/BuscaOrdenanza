@@ -745,7 +745,7 @@ async function init() {
             </div>
             <div class="result-meta">
               <span>Categoría: <strong>${escapeHtml(doc.category)}</strong></span>
-              <span>Archivo: <strong style="color: var(--text);">${escapeHtml(doc.original_filename || doc.filename)}</strong></span>
+              <span style="word-break: break-word; overflow-wrap: anywhere;">Archivo: <strong style="color: var(--text); word-break: break-word; overflow-wrap: anywhere;">${escapeHtml(doc.original_filename || doc.filename)}</strong></span>
             </div>
             <div class="result-text" style="font-style: italic; color: var(--text-muted);">
               Coincidencia encontrada en el título del documento. Haz clic abajo para abrir el archivo en el visor.
@@ -802,7 +802,7 @@ async function init() {
               </div>
               <div class="result-meta">
                 <span>Sección: <strong>${escapeHtml(hit.section || 'General')}</strong></span>
-                <span>Archivo: <strong style="color: var(--text);">${escapeHtml(hit.source || '')}</strong></span>
+                <span style="word-break: break-word; overflow-wrap: anywhere;">Archivo: <strong style="color: var(--text); word-break: break-word; overflow-wrap: anywhere;">${escapeHtml(hit.source || '')}</strong></span>
               </div>
               <div class="result-text">${escapeHtml((hit.content_text || '').slice(0, 300))}...</div>
               <button type="button" class="btn-secondary" style="margin-top: 10px; padding: 6px 14px; font-size: 11px;" data-document="${escapeHtml(hit.document_id || '')}">
