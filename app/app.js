@@ -166,8 +166,15 @@ async function init() {
         button.type = 'button';
         button.className = 'doc-item' + (doc.id === activeDocumentId ? ' active' : '');
         
-        const tagClass = doc.converted ? 'ready' : 'pending';
-        const tagText = doc.converted ? 'Markdown' : 'Pendiente';
+        let tagClass = 'ready';
+        let tagText = 'Markdown';
+        if (doc.is_scanned) {
+          tagClass = 'scanned';
+          tagText = 'PDF Original';
+        } else if (!doc.converted) {
+          tagClass = 'pending';
+          tagText = 'Pendiente';
+        }
         
         button.innerHTML = `
           <div class="doc-item-title">${escapeHtml(doc.title)}</div>
@@ -497,6 +504,22 @@ async function init() {
       }
     }
 
+    function isScannedOrNoisyMarkdown(markdown) {
+      if (!markdown || !markdown.trim()) return true;
+      const totalLength = markdown.length;
+      if (totalLength < 50) return true;
+
+      const noiseMatches = markdown.match(/[-_=\|]{4,}/g) || [];
+      const noiseLength = noiseMatches.reduce((acc, match) => acc + match.length, 0);
+
+      if (noiseLength / totalLength > 0.20) return true;
+
+      const words = markdown.match(/[a-zA-ZáéíóúÁÉÍÓÚñÑ]{2,}/g) || [];
+      if (words.length < 15 && totalLength > 80) return true;
+
+      return false;
+    }
+
     // Load Document Content
     async function loadMarkdown(documentId, fragmentHint = null) {
       activeDocumentId = documentId;
@@ -524,12 +547,22 @@ async function init() {
         viewerTitle.textContent = cleanTitle;
         viewerMetaText.textContent = `Archivo: ${documentId}.md`;
 
+        const isScannedDoc = (docMeta && docMeta.is_scanned) || isScannedOrNoisyMarkdown(fullMarkdownContent);
+        const scannedBanner = document.getElementById('scannedBanner');
+        if (scannedBanner) {
+          scannedBanner.style.display = isScannedDoc ? 'flex' : 'none';
+        }
+
         tabFragment.disabled = !fragmentHint;
         tabPDF.disabled = false;
 
         if (fragmentHint) {
           activeFragment = fragmentHint;
           setViewMode('fragment');
+        } else if (isScannedDoc) {
+          // Automatic fallback to "PDF Original" tab for scanned image PDFs
+          activeFragment = null;
+          setViewMode('pdf');
         } else {
           activeFragment = null;
           setViewMode('complete');

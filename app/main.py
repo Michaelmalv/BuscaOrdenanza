@@ -185,6 +185,7 @@ def list_uploaded_documents() -> list[dict]:
                                 'filename': filename,
                                 'original_filename': original_filename,
                                 'converted': stem in converted_stems,
+                                'is_scanned': stem in _SCANNED_DOCS_SET,
                                 'category': get_document_category(stem),
                             }
                         )
@@ -215,6 +216,9 @@ def list_uploaded_documents() -> list[dict]:
             else:
                 original_filename = uploaded_file.name
 
+            md_text = markdown_file.read_text(encoding='utf-8') if markdown_file.exists() else ''
+            is_scanned = uploaded_file.stem in _SCANNED_DOCS_SET or is_text_noisy(md_text)
+
             documents.append(
                 {
                     'id': uploaded_file.stem,
@@ -222,6 +226,7 @@ def list_uploaded_documents() -> list[dict]:
                     'filename': uploaded_file.name,
                     'original_filename': original_filename,
                     'converted': markdown_file.exists(),
+                    'is_scanned': is_scanned,
                     'category': get_document_category(uploaded_file.stem),
                 }
             )
@@ -484,6 +489,23 @@ _meili_online = False
 
 _in_memory_index = None
 _in_memory_index_lock = threading.Lock()
+_SCANNED_DOCS_SET = set()
+
+def is_text_noisy(text: str) -> bool:
+    if not text or not text.strip():
+        return True
+    total_len = len(text)
+    if total_len < 50:
+        return True
+    import re
+    noise_matches = re.findall(r'[-_=\|]{4,}', text)
+    noise_len = sum(len(m) for m in noise_matches)
+    if noise_len / total_len > 0.20:
+        return True
+    words = re.findall(r'[a-zA-ZáéíóúÁÉÍÓÚñÑ]{2,}', text)
+    if len(words) < 15 and total_len > 80:
+        return True
+    return False
 
 def get_in_memory_index():
     global _in_memory_index
@@ -559,12 +581,23 @@ def get_in_memory_index():
             _in_memory_index = []
             return _in_memory_index
             
-        # Precalculate lowercase search haystacks for high performance
-        print("[*] Precalculando indices de busqueda en memoria para velocidad instantanea...")
+        # Precalculate lowercase search haystacks and identify scanned documents
+        print("[*] Precalculando indices de busqueda y clasificando documentos escaneados...")
+        global _SCANNED_DOCS_SET
+        _SCANNED_DOCS_SET = set()
+        doc_text_map = {}
+
         for chunk in _in_memory_index:
             chunk['_haystack'] = f"{chunk.get('title', '')} {chunk.get('section', '')} {chunk.get('content_text', '')}".lower()
-            
-        print(f"[*] Indice completamente cargado y optimizado en {time.time() - start_time:.2f}s ({len(_in_memory_index)} fragmentos).")
+            doc_id = chunk.get('document_id')
+            if doc_id:
+                doc_text_map[doc_id] = doc_text_map.get(doc_id, '') + ' ' + (chunk.get('content_text') or '')
+
+        for doc_id, full_text in doc_text_map.items():
+            if is_text_noisy(full_text):
+                _SCANNED_DOCS_SET.add(doc_id)
+
+        print(f"[*] Indice completamente cargado y optimizado en {time.time() - start_time:.2f}s ({len(_in_memory_index)} fragmentos, {len(_SCANNED_DOCS_SET)} escaneados).")
         return _in_memory_index
 
 def check_meili_loop():
@@ -1111,9 +1144,10 @@ def home(request: Request) -> HTMLResponse:
       border-radius: 8px;
     }
 
-    .indicator-tag.ready {
-      color: var(--success);
-      background: rgba(22, 163, 74, 0.08);
+    .indicator-tag.scanned {
+      color: #b45309;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.25);
     }
 
     .indicator-tag.pending {
@@ -1686,6 +1720,14 @@ def home(request: Request) -> HTMLResponse:
               <button id="tabPDF" class="tab" disabled>PDF Original</button>
             </div>
             <div id="viewerLoading" class="loading-pulse" style="display: none; border-top-color: var(--primary);"></div>
+          </div>
+
+          <!-- Banner de aviso para documentos escaneados -->
+          <div id="scannedBanner" style="display: none; background: rgba(245, 158, 11, 0.08); border-top: 1px solid rgba(245, 158, 11, 0.2); border-bottom: 1px solid rgba(245, 158, 11, 0.2); color: #b45309; padding: 9px 24px; font-size: 12px; font-weight: 500; align-items: center; gap: 8px;">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="flex-shrink: 0;">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>Este documento es una copia escaneada. Se ha seleccionado automáticamente la pestaña <strong>PDF Original</strong> para una lectura óptima.</span>
           </div>
 
           <!-- Viewport -->
